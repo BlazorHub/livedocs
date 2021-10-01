@@ -1,10 +1,9 @@
 using System;
-using System.Net.Http.Headers;
+using System.Diagnostics;
 using System.Threading.Tasks;
 using LiveDocs.Server.config;
 using LiveDocs.Server.Models;
 using LiveDocs.Server.Services;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 
 namespace LiveDocs.Server.Replacers
@@ -26,6 +25,10 @@ namespace LiveDocs.Server.Replacers
         {
             var resourceGroup = _liveDocsOptions.Value.ServiceBus.ResourceGroupName;
             var serviceBusNamespace = _liveDocsOptions.Value.ServiceBus.NamespaceName;
+            
+            var localDevMachineNamePrefix = Debugger.IsAttached ? $"{Environment.MachineName}-" : string.Empty;
+            localDevMachineNamePrefix = "";
+            queueName = $"{localDevMachineNamePrefix}{queueName}";
 
             var requestUri = $"subscriptions/{_subscriptionId}/resourceGroups/{resourceGroup}/providers/Microsoft.ServiceBus/namespaces/{serviceBusNamespace}/queues/{queueName}?api-version=2017-04-01";
             var stats = await _azureRmApiClient.Query<ServiceBusGetQueueResponse>(requestUri);

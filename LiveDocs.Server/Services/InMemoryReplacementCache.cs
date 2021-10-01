@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
-using System.Threading.Channels;
 using System.Threading.Tasks;
 using Kusto.Data.Common;
 using LiveDocs.Server.Replacements;
@@ -23,6 +23,11 @@ namespace LiveDocs.Server.Services
             _logger = logger;
             _serviceProvider = serviceProvider;
             _backgroundTaskQueue = backgroundTaskQueue;
+        }
+
+        public void ClearCache()
+        {
+            _replacements = new();
         }
 
         public void RegisterReplacement(string name, string instruction, string timeToLive, bool replaceIfKeyExists)
@@ -54,8 +59,10 @@ namespace LiveDocs.Server.Services
         {
             var key = $"{instruction}:{name}";
 
+            // requested replacement must exist
             if (!_replacements.ContainsKey(key)) return (name, $"replacement with key {key} not found");
 
+            // if requested replacement is current, return it
             if (!_replacements[key].HasExpired()) return (name, _replacements[key].LatestReplacedData);
 
             if (waitForNewValueIfExpired)
@@ -69,30 +76,31 @@ namespace LiveDocs.Server.Services
             if(_replacements[key].IsScheduled)
                 return (name, _replacements[key].LatestReplacedData);
 
-            // schedule a new replacement
-            //_logger.LogDebug($"expired replacement {name} will be re-fetched in the background");
+            // otherwise schedule a new replacement
             await _backgroundTaskQueue.QueueBackgroundWorkItemAsync(
                 async token => await RunReplacement(_replacements[key]));
 
             _replacements[key].IsScheduled = true;
 
+            // finally return the expired replacement value as its better than nothing and should be replaced by next time
             return (name, _replacements[key].LatestReplacedData);
-        }
-
-        public void ClearCache()
-        {
-            _replacements = new();
         }
 
         private async Task RunReplacement(Replacement replacement)
         {
             try
             {
+                var stopwatch = new Stopwatch();
+                stopwatch.Start();
+
                 //_logger.LogInformation($"Running {replacement.Match} using {replacement.Instruction} with TTL {replacement.TimeToLive}");
                 var replacer = (IReplacer)_serviceProvider.GetServiceByRegisteredTypeName(replacement.Instruction);
                 var renderedValue = await replacer.Render(replacement.Match);
                 replacement.LatestReplacedData = renderedValue;
                 replacement.IsScheduled = false;
+
+                stopwatch.Stop();
+                _logger.LogInformation($"{replacement.Match}:{replacement.Instruction} completed after {stopwatch.ElapsedMilliseconds}ms");
             }
             catch (Exception e)
             {
@@ -114,7 +122,7 @@ namespace LiveDocs.Server.Services
 
         protected override async Task ExecuteAsync(CancellationToken cancellationToken)
         {
-            _logger.LogInformation($"Queued Hosted Service is running.");
+            _logger.LogInformation($"InMemoryReplacementCache Hosted Service is running.");
 
             await BackgroundProcessing(cancellationToken);
         }
@@ -133,60 +141,9 @@ namespace LiveDocs.Server.Services
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex,
-                        "Error occurred executing {WorkItem}.", nameof(workItem));
+                    _logger.LogError(ex, "Error occurred executing {WorkItem}.", nameof(workItem));
                 }
             }
         }
-    }
-
-    public interface IBackgroundTaskQueue
-    {
-        ValueTask QueueBackgroundWorkItemAsync(Func<CancellationToken, ValueTask> workItem);
-
-        ValueTask<Func<CancellationToken, ValueTask>> DequeueAsync(
-            CancellationToken cancellationToken);
-
-        int ItemCount { get; }
-    }
-
-    public class BackgroundTaskQueue : IBackgroundTaskQueue
-    {
-        private readonly Channel<Func<CancellationToken, ValueTask>> _queue;
-
-        public BackgroundTaskQueue(int capacity)
-        {
-            // Capacity should be set based on the expected application load and
-            // number of concurrent threads accessing the queue.            
-            // BoundedChannelFullMode.Wait will cause calls to WriteAsync() to return a task,
-            // which completes only when space became available. This leads to backpressure,
-            // in case too many publishers/calls start accumulating.
-            var options = new BoundedChannelOptions(capacity)
-            {
-                FullMode = BoundedChannelFullMode.Wait
-            };
-            _queue = Channel.CreateBounded<Func<CancellationToken, ValueTask>>(options);
-        }
-
-        public async ValueTask QueueBackgroundWorkItemAsync(
-            Func<CancellationToken, ValueTask> workItem)
-        {
-            if (workItem == null)
-            {
-                throw new ArgumentNullException(nameof(workItem));
-            }
-
-            await _queue.Writer.WriteAsync(workItem);
-        }
-
-        public async ValueTask<Func<CancellationToken, ValueTask>> DequeueAsync(
-            CancellationToken cancellationToken)
-        {
-            var workItem = await _queue.Reader.ReadAsync(cancellationToken);
-
-            return workItem;
-        }
-
-        public int ItemCount => _queue.Reader.Count;
     }
 }

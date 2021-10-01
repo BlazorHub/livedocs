@@ -20,6 +20,8 @@ namespace LiveDocs.Server
 {
     public class Startup
     {
+        private const string WellKnownAzureAdEndpointUri = "https://login.microsoftonline.com";
+
         public Startup(IConfiguration configuration)
         {
             Configuration = configuration;
@@ -51,7 +53,9 @@ namespace LiveDocs.Server
                 opts.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(
                     new[] { "application/octet-stream" });
             });
-
+            services.AddSingleton<IFileContentDownloader, FileContentDownloader>();
+            services.AddSingleton<IHubGroupTracker, HubGroupTracker>();
+            
             services.AddMediatrEndpoints(typeof(Startup));
 
             services.AddSingleton<IMarkdownReplacementAggregatorBackgroundService, MarkdownReplacementAggregatorBackgroundService>();
@@ -65,11 +69,21 @@ namespace LiveDocs.Server
                     Convert.ToBase64String(authToken));
             });
 
+            services.AddHttpClient("AzureIAMClient", c =>
+            {
+                c.BaseAddress = new Uri(WellKnownAzureAdEndpointUri);
+            });
+            
+            services.AddHttpClient("AzureRMClient", c =>
+            {
+                c.BaseAddress = new Uri(Configuration["LiveDocs:azureResourceManagementApiBaseUri"]);
+            });
+
             services.AddHttpClient("PublicUrlClient", c =>
             {
             });
 
-            services.AddSingleton<IFileContentDownloader, FileContentDownloader>();
+            
         }
         
         public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
